@@ -38,15 +38,11 @@ def newrow(layout, label, obj, prop_name):
     row.label(text=label)
     row.prop(obj, prop_name)
 
-# Main slicing logic
-def slicer(settings):
+def perform_axis_slicing(aob, axis, settings, scale_mm):
     scene = bpy.context.scene
     dp = bpy.context.evaluated_depsgraph_get()
-    aob = bpy.context.active_object
-    scale_mm = 1000 * scene.unit_settings.scale_length
 
     # Axis selection logic
-    axis = settings.laser_slicer_axis
     axis_index = {'X': 0, 'Y': 1, 'Z': 2}[axis]
     normal_vector = (int(axis == 'X'), int(axis == 'Y'), int(axis == 'Z'))
 
@@ -62,17 +58,8 @@ def slicer(settings):
 
     # Settings
     mat_thickness = settings.laser_slicer_material_thick / scale_mm
-    mat_width = settings.laser_slicer_material_width
-    mat_height = settings.laser_slicer_material_height
     cut_spacing = settings.laser_slicer_cut_spacing / scale_mm
-    cut_thickness = settings.laser_slicer_cut_thickness / scale_mm
-    sep_files = settings.laser_slicer_separate_files
     use_polygons = settings.laser_slicer_accuracy
-    dpi = settings.laser_slicer_dpi
-    svg_pos = settings.laser_slicer_svg_position
-    output_path = settings.laser_slicer_ofile
-    cut_color = settings.laser_slicer_cut_colour
-    line_thick = settings.laser_slicer_cut_line
 
     # Get slice range
     coords = [v.co[axis_index] for v in bm.verts]
@@ -80,12 +67,9 @@ def slicer(settings):
     maxv = max(coords)
     slice_pos = minv + mat_thickness * 0.5
 
-    dpi_scale = dpi / 25.4
-    scale = scale_mm * dpi_scale
     slice_vpos = []
     vertex_blocks = []
     edge_blocks = []
-    svg_elements = []
     v_total, e_total = 0, 0
     vcount_list, ecount_list = [0], [0]
     vertex_index = np.empty(0, dtype=np.int8)
@@ -94,7 +78,7 @@ def slicer(settings):
     cob = None
     cob_exists = False
     for obj in bpy.context.scene.objects:
-        if obj.get('Slices'):
+        if obj.get('Slices_' + axis):
             cob = obj
             cob_exists = True
             me = cob.data
@@ -104,9 +88,9 @@ def slicer(settings):
             bpy.ops.object.mode_set(mode='OBJECT')
             break
     if not cob_exists:
-        me = bpy.data.meshes.new('Slices')
-        cob = bpy.data.objects.new('Slices', me)
-        cob['Slices'] = 1
+        me = bpy.data.meshes.new('Slices_' + axis)
+        cob = bpy.data.objects.new('Slices_' + axis, me)
+        cob['Slices_' + axis] = 1
 
     # Slice loop
     while slice_pos < maxv:
@@ -200,19 +184,58 @@ def slicer(settings):
             ])
         vertex_blocks = polygon_paths
 
+    if not cob_exists:
+        bpy.context.scene.collection.objects.link(cob)
+
+    bpy.context.view_layer.objects.active = cob
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.object.mode_set(mode='OBJECT')
+    aob.select_set(True)
+    bpy.context.view_layer.objects.active = aob
+
+    return {
+        "vpos": slice_vpos,
+        "vertex_blocks": vertex_blocks,
+        "edge_blocks": edge_blocks,
+        "vertex_index": vertex_index,
+        "v_total": v_total,
+        "e_total": e_total,
+        "vcount_list": vcount_list,
+        "ecount_list": ecount_list
+    }
+
+def generate_svg_files(data, aob, axis, settings, scale_mm):
+    vertex_blocks = data['vertex_blocks']
+    edge_blocks = data['edge_blocks']
+
+    # Settings
+    mat_width = settings.laser_slicer_material_width
+    mat_height = settings.laser_slicer_material_height
+    cut_thickness = settings.laser_slicer_cut_thickness / scale_mm
+    sep_files = settings.laser_slicer_separate_files
+    use_polygons = settings.laser_slicer_accuracy
+    dpi = settings.laser_slicer_dpi
+    svg_pos = settings.laser_slicer_svg_position
+    output_path = settings.laser_slicer_ofile
+    cut_color = settings.laser_slicer_cut_colour
+    line_thick = settings.laser_slicer_cut_line
+
+    dpi_scale = dpi / 25.4
+    scale = scale_mm * dpi_scale
+
     # Setup SVG filenames
     if sep_files:
         if os.path.isdir(bpy.path.abspath(output_path)):
-            filepaths = [os.path.join(bpy.path.abspath(output_path), f"{aob.name}{i}.svg") for i in range(len(vertex_blocks))]
+            filepaths = [os.path.join(bpy.path.abspath(output_path), f"{aob.name}_{axis}_{i}.svg") for i in range(len(vertex_blocks))]
         else:
             out_dir = os.path.dirname(bpy.path.abspath(output_path or bpy.data.filepath))
             name_base = bpy.path.display_name_from_filepath(output_path or aob.name)
-            filepaths = [os.path.join(out_dir, f"{name_base}{i}.svg") for i in range(len(vertex_blocks))]
+            filepaths = [os.path.join(out_dir, f"{name_base}_{axis}_{i}.svg") for i in range(len(vertex_blocks))]
     else:
         if os.path.isdir(bpy.path.abspath(output_path)):
-            filepath = os.path.join(bpy.path.abspath(output_path), f"{aob.name}.svg")
+            filepath = os.path.join(bpy.path.abspath(output_path), f"{aob.name}_{axis}.svg")
         else:
-            filepath = os.path.join(os.path.dirname(bpy.data.filepath), f"{aob.name}.svg") if not output_path else bpy.path.abspath(output_path)
+            filepath = os.path.join(os.path.dirname(bpy.data.filepath), f"{aob.name}_{axis}.svg") if not output_path else bpy.path.abspath(output_path)
 
     # Generate SVG
     svg_doc = ""
@@ -284,14 +307,24 @@ def slicer(settings):
             f.write(svg_doc)
             f.write('</svg>\n')
 
-    if not cob_exists:
-        bpy.context.scene.collection.objects.link(cob)
+# === Main Slicer ===
 
-    bpy.context.view_layer.objects.active = cob
-    bpy.ops.object.mode_set(mode='EDIT')
-    bpy.ops.object.mode_set(mode='OBJECT')
-    aob.select_set(True)
-    bpy.context.view_layer.objects.active = aob
+def slicer(settings):
+    scene = bpy.context.scene
+    aob = bpy.context.active_object
+    scale_mm = 1000 * scene.unit_settings.scale_length
+    axes = []
+    if settings.laser_slicer_axis_x:
+        axes.append('X')
+    if settings.laser_slicer_axis_y:
+        axes.append('Y')
+    if settings.laser_slicer_axis_z:
+        axes.append('Z')
+
+    for axis in axes:
+        print(f"Slicing on axis: {axis}")
+        result = perform_axis_slicing(aob, axis, settings, scale_mm)
+        generate_svg_files(result, aob, axis, settings, scale_mm)
 
 # Operator
 class OBJECT_OT_Laser_Slicer(bpy.types.Operator):
@@ -319,12 +352,17 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
         newrow(layout, "Width (mm):", settings, 'laser_slicer_material_width')
         newrow(layout, "Height (mm):", settings, 'laser_slicer_material_height')
 
+        layout.label(text="Axis to Slice:")
+        row = layout.row()
+        row.prop(settings, "laser_slicer_axis_x", toggle=True)
+        row.prop(settings, "laser_slicer_axis_y", toggle=True)
+        row.prop(settings, "laser_slicer_axis_z", toggle=True)
+
         layout.label(text="Cut Settings:")
         newrow(layout, "DPI:", settings, 'laser_slicer_dpi')
         newrow(layout, "Line Colour:", settings, 'laser_slicer_cut_colour')
         newrow(layout, "Thickness (px):", settings, 'laser_slicer_cut_line')
         newrow(layout, "Separate Files:", settings, 'laser_slicer_separate_files')
-        newrow(layout, "Cut Axis:", settings, 'laser_slicer_axis')  # NEW
 
         if settings.laser_slicer_separate_files:
             newrow(layout, "Cut Position:", settings, 'laser_slicer_svg_position')
@@ -343,18 +381,29 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
             bm.transform(aob.matrix_world)
             aob.evaluated_get(dp).to_mesh_clear()
 
-            axis_index = {'X': 0, 'Y': 1, 'Z': 2}[settings.laser_slicer_axis]
-            coords = [v.co[axis_index] for v in bm.verts]
-            minv = min(coords)
-            maxv = max(coords)
+            axes = []
+            if settings.laser_slicer_axis_x:
+                axes.append('X')
+            if settings.laser_slicer_axis_y:
+                axes.append('Y')
+            if settings.laser_slicer_axis_z:
+                axes.append('Z')
+
+            slices = 0
+            for axis in axes:
+                axis_index = {'X': 0, 'Y': 1, 'Z': 2}[axis]
+                coords = [v.co[axis_index] for v in bm.verts]
+                minv = min(coords)
+                maxv = max(coords)
+
+                scale_mm = 1000 * context.scene.unit_settings.scale_length
+                mat_thickness = settings.laser_slicer_material_thick / scale_mm
+                spacing = settings.laser_slicer_cut_spacing / scale_mm
+
+                total_length = maxv - minv
+                slices += 1 + math.ceil(total_length / (mat_thickness + spacing))
+
             bm.free()
-
-            scale_mm = 1000 * context.scene.unit_settings.scale_length
-            mat_thickness = settings.laser_slicer_material_thick / scale_mm
-            spacing = settings.laser_slicer_cut_spacing / scale_mm
-
-            total_length = maxv - minv
-            slices = 1 + math.ceil(total_length / (mat_thickness + spacing))
 
             row = layout.row()
             row.label(text=f"No. of slices: {slices}")
@@ -377,10 +426,9 @@ class Slicer_Settings(bpy.types.PropertyGroup):
     laser_slicer_accuracy: BoolProperty(name="", description="Use accurate polygons", default=False)
     laser_slicer_cut_colour: FloatVectorProperty(size=3, name="", subtype='COLOR', min=0, max=1, default=(1.0, 0.0, 0.0))
     laser_slicer_cut_line: FloatProperty(name="", description="SVG line width (px)", min=0, max=5, default=1)
-    laser_slicer_axis: EnumProperty(
-        items=[('X', 'X-Axis', ''), ('Y', 'Y-Axis', ''), ('Z', 'Z-Axis', '')],
-        name="", description="Which axis to slice along", default='Z'
-    )
+    laser_slicer_axis_x: BoolProperty(name="X", description="Slice along X axis", default=False)
+    laser_slicer_axis_y: BoolProperty(name="Y", description="Slice along Y axis", default=False)
+    laser_slicer_axis_z: BoolProperty(name="Z", description="Slice along Z axis", default=True)
 
 # Registering
 classes = (OBJECT_PT_Laser_Slicer_Panel, OBJECT_OT_Laser_Slicer, Slicer_Settings)
