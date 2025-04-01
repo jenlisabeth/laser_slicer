@@ -29,7 +29,7 @@ bl_info = {
     "category": "Object"
 }
 
-import bpy, os, bmesh, numpy as np
+import bpy, os, bmesh, numpy as np, math
 from bpy.props import FloatProperty, BoolProperty, EnumProperty, IntProperty, StringProperty, FloatVectorProperty
 
 # UI row helper
@@ -64,6 +64,7 @@ def slicer(settings):
     mat_thickness = settings.laser_slicer_material_thick / scale_mm
     mat_width = settings.laser_slicer_material_width
     mat_height = settings.laser_slicer_material_height
+    cut_spacing = settings.laser_slicer_cut_spacing / scale_mm
     cut_thickness = settings.laser_slicer_cut_thickness / scale_mm
     sep_files = settings.laser_slicer_separate_files
     use_polygons = settings.laser_slicer_accuracy
@@ -144,7 +145,7 @@ def slicer(settings):
         e_total += len(edges)
         vcount_list.append(v_total)
         ecount_list.append(e_total)
-        slice_pos += mat_thickness
+        slice_pos += mat_thickness + cut_spacing
         cbm.free()
 
     bm.free()
@@ -328,16 +329,35 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
         if settings.laser_slicer_separate_files:
             newrow(layout, "Cut Position:", settings, 'laser_slicer_svg_position')
 
-        newrow(layout, "Cut Spacing (mm):", settings, 'laser_slicer_cut_thickness')
+        newrow(layout, "Cut spacing (mm):", settings, 'laser_slicer_cut_spacing')
+        newrow(layout, "Laser kerf (mm):", settings, 'laser_slicer_cut_thickness')
         newrow(layout, "SVG Polygons:", settings, 'laser_slicer_accuracy')
         newrow(layout, "Export Path:", settings, 'laser_slicer_ofile')
 
         if context.active_object and context.active_object.select_get():
+            aob = context.active_object
+            dp = context.evaluated_depsgraph_get()
+            temp_mesh = aob.evaluated_get(dp).to_mesh()
+            bm = bmesh.new()
+            bm.from_mesh(temp_mesh)
+            bm.transform(aob.matrix_world)
+            aob.evaluated_get(dp).to_mesh_clear()
+
+            axis_index = {'X': 0, 'Y': 1, 'Z': 2}[settings.laser_slicer_axis]
+            coords = [v.co[axis_index] for v in bm.verts]
+            minv = min(coords)
+            maxv = max(coords)
+            bm.free()
+
+            scale_mm = 1000 * context.scene.unit_settings.scale_length
+            mat_thickness = settings.laser_slicer_material_thick / scale_mm
+            spacing = settings.laser_slicer_cut_spacing / scale_mm
+
+            total_length = maxv - minv
+            slices = 1 + math.ceil(total_length / (mat_thickness + spacing))
+
             row = layout.row()
-            dimensions = context.active_object.dimensions
-            length = dimensions[['Y', 'Z', 'X'].index(settings.laser_slicer_axis)] * 1000 * context.scene.unit_settings.scale_length
-            slices = length / settings.laser_slicer_material_thick
-            row.label(text=f"No. of slices: {slices:.0f}")
+            row.label(text=f"No. of slices: {slices}")
             if bpy.data.filepath or settings.laser_slicer_ofile:
                 layout.operator("object.laser_slicer", text="Slice the object")
 
@@ -351,6 +371,7 @@ class Slicer_Settings(bpy.types.PropertyGroup):
     laser_slicer_svg_position: EnumProperty(
         items=[('0', 'Top left', ''), ('1', 'Staggered', ''), ('2', 'Centre', '')],
         name="", description="SVG layout", default='0')
+    laser_slicer_cut_spacing: FloatProperty(name="", description="Cut spacing (mm)", min=0, max=500, default=1)
     laser_slicer_cut_thickness: FloatProperty(name="", description="Laser kerf (mm)", min=0, max=5, default=1)
     laser_slicer_ofile: StringProperty(name="", description="Output file", subtype="FILE_PATH", default="")
     laser_slicer_accuracy: BoolProperty(name="", description="Use accurate polygons", default=False)
