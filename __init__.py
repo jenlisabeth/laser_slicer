@@ -93,9 +93,10 @@ def perform_axis_slicing(aob, axis, settings, scale_mm):
         cob['Slices_' + axis] = 1
 
     # Slice loop
+    slice_positions = []
     while slice_pos < maxv:
+        slice_positions.append(slice_pos)
         axis_vector = tuple([slice_pos*x for x in normal_vector])
-        print(f"Slice position: {slice_pos}, Axis vector: {axis_vector}")
         cbm = bm.copy()
         cut = bmesh.ops.bisect_plane(
             cbm, 
@@ -201,10 +202,11 @@ def perform_axis_slicing(aob, axis, settings, scale_mm):
         "v_total": v_total,
         "e_total": e_total,
         "vcount_list": vcount_list,
-        "ecount_list": ecount_list
+        "ecount_list": ecount_list,
+        "slice_positions": slice_positions
     }
 
-def generate_svg_files(data, aob, axis, settings, scale_mm):
+def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions):
     vertex_blocks = data['vertex_blocks']
     edge_blocks = data['edge_blocks']
 
@@ -270,6 +272,52 @@ def generate_svg_files(data, aob, axis, settings, scale_mm):
             y_offset = mat_height / (2 * scale_mm) - 0.5 * cysize - ymin
 
         svg_group += '<g>\n'
+
+        if settings.laser_slicer_labels:
+            slice_label = f"{axis}-{i:02d}"
+            if valid_verts:
+                label_x = scale * (x_offset + (xmin + xmax) / 2)
+                label_y = scale * (y_offset + (ymin + ymax) / 2)
+                svg_group += f'<text x="{label_x:.2f}" y="{label_y:.2f}" font-size="12" fill="black" text-anchor="middle">{slice_label}</text>\n'
+
+        if settings.laser_slicer_intersections:
+            # Add indicators of other axis slices
+            for other_axis, positions in all_slice_positions.items():
+                if other_axis == axis:
+                    continue  # Skip current axis
+
+                other_axis_index = {'X': 0, 'Y': 1, 'Z': 2}[other_axis]
+                axis_index = {'X': 0, 'Y': 1, 'Z': 2}[axis]
+                proj_axes = [i for i in range(3) if i != axis_index]
+
+                # Only show lines if the other axis maps onto the 2D plane
+                if other_axis_index in proj_axes:
+                    dir_2d = proj_axes.index(other_axis_index)  # 0 for x-axis, 1 for y-axis in 2D
+                    for pos in positions:
+                        # Convert world-space slice position to local 2D slice position
+                        local = pos - aob.location[other_axis_index]
+                        if dir_2d == 0:
+                            p = scale * (x_offset + local)
+                            svg_group += f'<line x1="{p:.2f}" y1="0" x2="{p:.2f}" y2="{mat_height * dpi_scale:.2f}" '
+                            svg_group += 'style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
+                        else:
+                            p = scale * (y_offset + local)
+                            svg_group += f'<line x1="0" y1="{p:.2f}" x2="{mat_width * dpi_scale:.2f}" y2="{p:.2f}" '
+                            svg_group += 'style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
+                        
+                        if settings.laser_slicer_labels:
+                            label = f"{other_axis}-{positions.index(pos):02d}"
+                            if dir_2d == 0:
+                                # Vertical line label
+                                label_x = p
+                                label_y = 10  # Y offset from top, in pixels
+                                svg_group += f'<text x="{label_x:.2f}" y="{label_y:.2f}" font-size="8" fill="gray" text-anchor="middle">{label}</text>\n'
+                            else:
+                                # Horizontal line label
+                                label_x = 10  # X offset from left
+                                label_y = p + 3  # Slight nudge for alignment
+                                svg_group += f'<text x="{label_x:.2f}" y="{label_y:.2f}" font-size="8" fill="gray" text-anchor="start">{label}</text>\n'
+        
         if not use_polygons:
             for edge in edge_blocks[i]:
                 p1 = (scale * (x_offset + edge[0][0]), scale * (y_offset + edge[0][1]))
@@ -313,6 +361,7 @@ def slicer(settings):
     scene = bpy.context.scene
     aob = bpy.context.active_object
     scale_mm = 1000 * scene.unit_settings.scale_length
+
     axes = []
     if settings.laser_slicer_axis_x:
         axes.append('X')
@@ -321,10 +370,16 @@ def slicer(settings):
     if settings.laser_slicer_axis_z:
         axes.append('Z')
 
+    all_slices = {}
+    results_per_axis = {}
+
     for axis in axes:
-        print(f"Slicing on axis: {axis}")
         result = perform_axis_slicing(aob, axis, settings, scale_mm)
-        generate_svg_files(result, aob, axis, settings, scale_mm)
+        results_per_axis[axis] = result
+        all_slices[axis] = result['slice_positions']
+
+    for axis in axes:
+        generate_svg_files(results_per_axis[axis], aob, axis, settings, scale_mm, all_slices)
 
 # Operator
 class OBJECT_OT_Laser_Slicer(bpy.types.Operator):
@@ -347,30 +402,33 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
         layout = self.layout
         settings = context.scene.slicer_settings
 
-        layout.label(text="Material Dimensions:")
-        newrow(layout, "Thickness (mm):", settings, 'laser_slicer_material_thick')
-        newrow(layout, "Width (mm):", settings, 'laser_slicer_material_width')
-        newrow(layout, "Height (mm):", settings, 'laser_slicer_material_height')
+        box = layout.box()
+        box.label(text="Material Dimensions:")
+        newrow(box, "Thickness (mm):", settings, 'laser_slicer_material_thick')
+        newrow(box, "Width (mm):", settings, 'laser_slicer_material_width')
+        newrow(box, "Height (mm):", settings, 'laser_slicer_material_height')
 
-        layout.label(text="Axis to Slice:")
-        row = layout.row()
+        box = layout.box()
+        box.label(text="Axis to Slice:")
+        row = box.row()
         row.prop(settings, "laser_slicer_axis_x", toggle=True)
         row.prop(settings, "laser_slicer_axis_y", toggle=True)
         row.prop(settings, "laser_slicer_axis_z", toggle=True)
+        newrow(box, "Show intersections:", settings, 'laser_slicer_intersections')
 
-        layout.label(text="Cut Settings:")
-        newrow(layout, "DPI:", settings, 'laser_slicer_dpi')
-        newrow(layout, "Line Colour:", settings, 'laser_slicer_cut_colour')
-        newrow(layout, "Thickness (px):", settings, 'laser_slicer_cut_line')
-        newrow(layout, "Separate Files:", settings, 'laser_slicer_separate_files')
-
+        box = layout.box()
+        box.label(text="Cut Settings:")
+        newrow(box, "DPI:", settings, 'laser_slicer_dpi')
+        newrow(box, "Line Colour:", settings, 'laser_slicer_cut_colour')
+        newrow(box, "Thickness (px):", settings, 'laser_slicer_cut_line')
+        newrow(box, "Separate Files:", settings, 'laser_slicer_separate_files')
         if settings.laser_slicer_separate_files:
-            newrow(layout, "Cut Position:", settings, 'laser_slicer_svg_position')
-
-        newrow(layout, "Cut spacing (mm):", settings, 'laser_slicer_cut_spacing')
-        newrow(layout, "Laser kerf (mm):", settings, 'laser_slicer_cut_thickness')
-        newrow(layout, "SVG Polygons:", settings, 'laser_slicer_accuracy')
-        newrow(layout, "Export Path:", settings, 'laser_slicer_ofile')
+            newrow(box, "Cut Position:", settings, 'laser_slicer_svg_position')
+        newrow(box, "Cut spacing (mm):", settings, 'laser_slicer_cut_spacing')
+        newrow(box, "Laser kerf (mm):", settings, 'laser_slicer_cut_thickness')
+        newrow(box, "SVG Polygons:", settings, 'laser_slicer_accuracy')
+        newrow(box, "Export Path:", settings, 'laser_slicer_ofile')
+        newrow(box, "Enable Labels:", settings, 'laser_slicer_labels')
 
         if context.active_object and context.active_object.select_get():
             aob = context.active_object
@@ -429,6 +487,8 @@ class Slicer_Settings(bpy.types.PropertyGroup):
     laser_slicer_axis_x: BoolProperty(name="X", description="Slice along X axis", default=False)
     laser_slicer_axis_y: BoolProperty(name="Y", description="Slice along Y axis", default=False)
     laser_slicer_axis_z: BoolProperty(name="Z", description="Slice along Z axis", default=True)
+    laser_slicer_labels: BoolProperty(name="", description="Enable labels in svg", default=True)
+    laser_slicer_intersections: BoolProperty(name="", description="Show intersections in svg", default=True)
 
 # Registering
 classes = (OBJECT_PT_Laser_Slicer_Panel, OBJECT_OT_Laser_Slicer, Slicer_Settings)
