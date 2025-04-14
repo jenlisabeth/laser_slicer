@@ -217,6 +217,8 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
     edge_blocks = data['edge_blocks']
 
     # Settings
+    notch_margin = settings.laser_slicer_cut_notch_margin / scale_mm
+    mat_thickness = settings.laser_slicer_material_thick / scale_mm
     mat_width = settings.laser_slicer_material_width
     mat_height = settings.laser_slicer_material_height
     cut_thickness = settings.laser_slicer_cut_thickness / scale_mm
@@ -227,6 +229,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
     output_path = settings.laser_slicer_ofile
     cut_color = settings.laser_slicer_cut_colour
     line_thick = settings.laser_slicer_cut_line
+    label_color = settings.laser_slicer_label_colour
 
     dpi_scale = dpi / 25.4
     scale = scale_mm * dpi_scale
@@ -269,7 +272,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
         xmax = max(v[0] for v in valid_verts)
         ymin = min(v[1] for v in valid_verts)
         ymax = max(v[1] for v in valid_verts)
-        logger.debug(f"[DEBUG] Slice {i}: Polygon bounds: xmin={xmin}, xmax={xmax}, ymin={ymin}, ymax={ymax}")
+        logger.debug(f"[DEBUG] Slice {axis}_{i}: Polygon bounds: xmin={xmin}, xmax={xmax}, ymin={ymin}, ymax={ymax}")
 
         cxsize, cysize = xmax - xmin + cut_thickness, ymax - ymin + cut_thickness
 
@@ -290,7 +293,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
             x_offset = mat_width / (2 * scale_mm) - 0.5 * cxsize - xmin
             y_offset = mat_height / (2 * scale_mm) - 0.5 * cysize - ymin
 
-        logger.debug(f"[DEBUG] Slice {i}: x_offset={x_offset}, y_offset={y_offset}, row_height={row_height}, last_xmax={last_xmax}")
+        logger.debug(f"[DEBUG] Slice {axis}_{i}: x_offset={x_offset}, y_offset={y_offset}, row_height={row_height}, last_xmax={last_xmax}")
         svg_group += '<g>\n'
 
         if settings.laser_slicer_labels:
@@ -298,7 +301,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
             if valid_verts:
                 label_x = scale * (x_offset + (xmin + xmax) / 2)
                 label_y = scale * (y_offset + (ymin + ymax) / 2)
-                svg_group += f'<text x="{label_x:.2f}" y="{label_y:.2f}" font-size="12" fill="black" text-anchor="middle">{slice_label}</text>\n'
+                svg_group += f'<text x="{label_x:.2f}" y="{label_y:.2f}" font-size="12" fill="rgb({int(255*label_color[0])},{int(255*label_color[1])},{int(255*label_color[2])})" text-anchor="middle">{slice_label}</text>\n'
 
         svg_points = []
         if not use_polygons:
@@ -323,12 +326,6 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
                     points += f"{x:.4f},{y:.4f} "
             if points:
                 svg_group += f'<polygon points="{points.strip()}" style="fill:none;stroke:rgb({int(255*cut_color[0])},{int(255*cut_color[1])},{int(255*cut_color[2])});stroke-width:{line_thick}" />\n'
-        logger.debug(f"[DEBUG] SVG points for slice {i}: {svg_points}")
-
-        # Check for identical points and give only the identicals
-        if len(svg_points) > 1:
-            dupe_points = [p for p in svg_points if svg_points.count(p) > 1]
-            logger.debug(f"[DEBUG] Duplicate points for slice {i}: {dupe_points}")
 
         if settings.laser_slicer_intersections:
             # Retrieve the slice object (which holds the polygon data).
@@ -340,7 +337,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
             if slice_obj is None:
                 slice_obj = aob  # Fallback.
 
-            logger.debug(f"[DEBUG] Processing intersections for slice {i} with slice_obj location: {slice_obj.location}")
+            logger.debug(f"[DEBUG] Processing intersections for slice {axis}_{i} with slice_obj location: {slice_obj.location}")
 
             for other_axis, positions in all_slice_positions.items():
                 if other_axis == axis:
@@ -360,8 +357,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
                         if dir_2d == 0:
                             local_x_pos = scale * (x_offset + local_pos)
                             logger.debug(f"[DEBUG] Calculated local coordinate for {other_axis}: {local_x_pos}")
-                            min_y = None  # To store the minimum y intersection
-                            max_y = None  # To store the maximum y intersection
+                            intersections = []
 
                             for p1, p2 in svg_points:
                                 # Check if the vertical line at local_x_pos might intersect the segment.
@@ -377,36 +373,49 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
                                     y_int = slope * (local_x_pos - p1[0]) + p1[1]
                                     logger.debug(f"[DEBUG] Intersection found at ({local_x_pos}, {y_int}) on segment between {p1} and {p2}")
 
-                                    # Update the minimum and maximum y intersection values.
-                                    if min_y is None or y_int < min_y:
-                                        min_y = y_int
-                                    if max_y is None or y_int > max_y:
-                                        max_y = y_int
+                                    # Only add if not nearly a duplicate.
+                                    tol = 1e-6
+                                    if not any(abs(y_int - y) < tol for y in intersections):
+                                        intersections.append(y_int)
+                            intersections.sort()
+                            logger.debug(f"[DEBUG] Intersections for slice {axis}_{i}: {intersections}")
 
-                            if min_y is None or max_y is None:
-                                logger.debug(f"[DEBUG] No intersections found for slice {i} on axis {other_axis}")
+                            if len(intersections) == 0:
+                                logger.debug(f"[DEBUG] No intersections found for slice {axis}_{i} on axis {other_axis}")
                                 continue
                             else:
-                                # After the loop, min_y holds the lowest intersection y-value
-                                # and max_y holds the highest intersection y-value.
-                                logger.debug(f"[DEBUG] Final min_y: {min_y}, max_y: {max_y}")
+                                for index in range(0, len(intersections) - 1, 2):
+                                    min_y = intersections[index]
+                                    max_y = intersections[index + 1]
+                                    logger.debug(f"[DEBUG] Found min_y: {min_y}, max_y: {max_y}")
 
-                                # Draw min and max points
-                                r = 3
-                                svg_group += f'<circle cx="{local_x_pos:.2f}" cy="{min_y:.2f}" r="{r}" fill="red" />\n'
-                                svg_group += f'<circle cx="{local_x_pos:.2f}" cy="{max_y:.2f}" r="{r}" fill="red" />\n'
-                                # Draw the intersection line
-                                svg_group += f'<line x1="{local_x_pos:.2f}" y1="{min_y:.2f}" x2="{local_x_pos:.2f}" y2="{max_y:.2f}" style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
-                                if settings.laser_slicer_labels:
-                                    label = f"{other_axis}-{positions.index(pos):02d}"
-                                    svg_group += f'<text x="{local_x_pos:.2f}" y="{min_y-5:.2f}" font-size="8" fill="gray" text-anchor="middle">{label} start</text>\n'
-                                    svg_group += f'<text x="{local_x_pos:.2f}" y="{max_y+12:.2f}" font-size="8" fill="gray" text-anchor="middle">{label} end</text>\n'
+                                    # draw rectangle from min_y to mid_y with width being mat_thickness + notch_margin
+                                    mid_y = ((min_y + max_y) / 2)
+                                    rect_width = scale * (mat_thickness + notch_margin)
+                                    logger.debug(f"[DEBUG] Rectangle width: {rect_width}")
+                                    opposing_y = min_y-rect_width if current_axis_index == 0 else max_y+rect_width
+                                    points = [
+                                        (local_x_pos - rect_width / 2, opposing_y),
+                                        (local_x_pos + rect_width / 2, opposing_y),
+                                        (local_x_pos + rect_width / 2, mid_y),
+                                        (local_x_pos - rect_width / 2, mid_y)
+                                    ]
+                                    svg_group += f'<polygon points="{" ".join([f"{x:.2f},{y:.2f}" for x, y in points])}" style="fill:none;stroke:rgb({int(255*cut_color[0])},{int(255*cut_color[1])},{int(255*cut_color[2])});stroke-width:{line_thick}" />\n'
+                                    # Draw min and max points
+                                    # r = 3
+                                    # svg_group += f'<circle cx="{local_x_pos:.2f}" cy="{min_y:.2f}" r="{r}" fill="red" />\n'
+                                    # svg_group += f'<circle cx="{local_x_pos:.2f}" cy="{max_y:.2f}" r="{r}" fill="red" />\n'
+                                    # # Draw the intersection line
+                                    # svg_group += f'<line x1="{local_x_pos:.2f}" y1="{min_y:.2f}" x2="{local_x_pos:.2f}" y2="{max_y:.2f}" style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
+                                    if settings.laser_slicer_labels:
+                                        label = f"{other_axis}-{positions.index(pos):02d}"
+                                        label_y = mid_y+10 if current_axis_index == 0 else mid_y-10
+                                        svg_group += f'<text x="{local_x_pos:.2f}" y="{label_y:.2f}" font-size="8" fill="rgb({int(255*label_color[0])},{int(255*label_color[1])},{int(255*label_color[2])})" text-anchor="middle">{label}</text>\n'
                             
                         else:
                             local_y_pos = scale * (y_offset + local_pos)
                             logger.debug(f"[DEBUG] Calculated local coordinate for {other_axis}: {local_y_pos}")
-                            min_x = None  # To store the minimum x intersection
-                            max_x = None  # To store the maximum x intersection
+                            intersections = []
 
                             for p1, p2 in svg_points:
                                 # Check if the horizontal line at local_y_pos might intersect the segment
@@ -424,31 +433,45 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
                                     x_int = p1[0] + (local_y_pos - p1[1]) / slope
                                     logger.debug(f"[DEBUG] Intersection found at ({x_int}, {local_y_pos}) on segment between {p1} and {p2}")
 
-                                    # Update the minimum and maximum x intersection values.
-                                    if min_x is None or x_int < min_x:
-                                        min_x = x_int
-                                    if max_x is None or x_int > max_x:
-                                        max_x = x_int
+                                    # Only add if not nearly a duplicate.
+                                    tol = 1e-6
+                                    if not any(abs(x_int - x) < tol for x in intersections):
+                                        intersections.append(x_int)
+                            intersections.sort()
+                            logger.debug(f"[DEBUG] Cut sets for slice {axis}_{i}: {intersections}")
 
-                            if min_x is None or max_x is None:
-                                logger.debug(f"[DEBUG] No intersections found for slice {i} on axis {other_axis}")
+                            if len(intersections) == 0:
+                                logger.debug(f"[DEBUG] No intersections found for slice {axis}_{i} on axis {other_axis}")
                                 continue
                             else:
-                                # After the loop, min_x holds the leftmost intersection x-value 
-                                # and max_x holds the rightmost intersection x-value.
-                                logger.debug(f"[DEBUG] Final min_x: {min_x}, max_x: {max_x}")
+                                for index in range(0, len(intersections) - 1, 2):
+                                    min_x = intersections[index]
+                                    max_x = intersections[index + 1]
+                                    logger.debug(f"[DEBUG] Found min_x: {min_x}, max_x: {max_x}")
 
-                                # Draw min and max points
-                                r = 3
-                                svg_group += f'<circle cx="{min_x:.2f}" cy="{local_y_pos:.2f}" r="{r}" fill="red" />\n'
-                                svg_group += f'<circle cx="{max_x:.2f}" cy="{local_y_pos:.2f}" r="{r}" fill="red" />\n'
-                                # Draw the intersection line
-                                svg_group += f'<line x1="{min_x:.2f}" y1="{local_y_pos:.2f}" x2="{local_y_pos:.2f}" y2="{max_x:.2f}" style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
-                                if settings.laser_slicer_labels:
-                                    label = f"{other_axis}-{positions.index(pos):02d}"
-                                    svg_group += f'<text x="{min_x-5:.2f}" y="{local_y_pos:.2f}" font-size="8" fill="gray" text-anchor="middle">{label} start</text>\n'
-                                    svg_group += f'<text x="{max_x+12:.2f}" y="{local_y_pos:.2f}" font-size="8" fill="gray" text-anchor="middle">{label} end</text>\n'                 
+                                    # draw rectangle from min_x to mid_x with height being mat_thickness + notch_margin
+                                    mid_x = ((min_x + max_x) / 2)
+                                    rect_height = scale * (mat_thickness + notch_margin)
+                                    logger.debug(f"[DEBUG] Rectangle height: {rect_height}")
+                                    opposing_x = min_x-rect_width if current_axis_index == 0 else max_x+rect_width
+                                    points = [
+                                        (opposing_x, local_y_pos - rect_height / 2),
+                                        (opposing_x, local_y_pos - rect_height / 2),
+                                        (mid_x, local_y_pos + rect_height / 2),
+                                        (min_x, local_y_pos + rect_height / 2)
+                                    ]
+                                    svg_group += f'<polygon points="{" ".join([f"{x:.2f},{y:.2f}" for x, y in points])}" style="fill:none;stroke:rgb({int(255*cut_color[0])},{int(255*cut_color[1])},{int(255*cut_color[2])});stroke-width:{line_thick}" />\n'
 
+                                    # Draw min and max points
+                                    # r = 3
+                                    # svg_group += f'<circle cx="{min_x:.2f}" cy="{local_y_pos:.2f}" r="{r}" fill="red" />\n'
+                                    # svg_group += f'<circle cx="{max_x:.2f}" cy="{local_y_pos:.2f}" r="{r}" fill="red" />\n'
+                                    # # Draw the intersection line
+                                    # svg_group += f'<line x1="{min_x:.2f}" y1="{local_y_pos:.2f}" x2="{local_y_pos:.2f}" y2="{max_x:.2f}" style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
+                                    if settings.laser_slicer_labels:
+                                        label = f"{other_axis}-{positions.index(pos):02d}"
+                                        label_x = mid_x+10 if current_axis_index == 0 else mid_x-10
+                                        svg_group += f'<text x="{label_x:.2f}" y="{local_y_pos:.2f}" font-size="8" fill="rgb({int(255*label_color[0])},{int(255*label_color[1])},{int(255*label_color[2])})" text-anchor="middle">{label}</text>\n'            
 
         svg_group += '</g>\n'
 
@@ -506,11 +529,19 @@ class OBJECT_OT_Laser_Slicer(bpy.types.Operator):
     bl_idname = "object.laser_slicer"
 
     def execute(self, context):
-        log_path = bpy.path.abspath(context.scene.slicer_settings.laser_slicer_log_path)
-        log_handler = logging.FileHandler(log_path)
+        if not context.scene.slicer_settings.laser_slicer_logging:
+            logger.setLevel(logging.ERROR)
+        else:
+            logger.setLevel(logging.DEBUG)
+            if not os.path.exists(context.scene.slicer_settings.laser_slicer_log_path):
+                os.makedirs(os.path.dirname(context.scene.slicer_settings.laser_slicer_log_path), exist_ok=True)
+                with open(context.scene.slicer_settings.laser_slicer_log_path, 'w') as f:
+                    f.write("Log file created.\n")
+            log_path = bpy.path.abspath(context.scene.slicer_settings.laser_slicer_log_path)
+            log_handler = logging.FileHandler(log_path)
+            logger.addHandler(log_handler)
 
         try:
-            logger.addHandler(log_handler)
             slicer(context.scene.slicer_settings)
             return {'FINISHED'}
 
@@ -519,7 +550,8 @@ class OBJECT_OT_Laser_Slicer(bpy.types.Operator):
             return {'CANCELLED'}
 
         finally:
-            logger.removeHandler(log_handler)
+            if context.scene.slicer_settings.laser_slicer_logging:
+                logger.removeHandler(log_handler)
 
 # UI Panel
 class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
@@ -546,6 +578,8 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
         row.prop(settings, "laser_slicer_axis_y", toggle=True)
         row.prop(settings, "laser_slicer_axis_z", toggle=True)
         newrow(box, "Show intersections:", settings, 'laser_slicer_intersections')
+        if settings.laser_slicer_intersections:
+            newrow(box, "Notch margin (mm):", settings, 'laser_slicer_cut_notch_margin')
 
         box = layout.box()
         box.label(text="Cut Settings:")
@@ -560,11 +594,15 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
         newrow(box, "SVG Polygons:", settings, 'laser_slicer_accuracy')
         newrow(box, "Export Path:", settings, 'laser_slicer_ofile')
         newrow(box, "Enable Labels:", settings, 'laser_slicer_labels')
+        if settings.laser_slicer_labels:
+            newrow(box, "Label Colour:", settings, 'laser_slicer_label_colour')
 
         
         box = layout.box()
         box.label(text="Log Settings:")
-        newrow(box, "Log Path:", settings, 'laser_slicer_log_path')
+        newrow(box, "Enable Logging:", settings, 'laser_slicer_logging')
+        if settings.laser_slicer_logging:
+            newrow(box, "Log Path:", settings, 'laser_slicer_log_path')
 
         if context.active_object and context.active_object.select_get():
             aob = context.active_object
@@ -624,8 +662,11 @@ class Slicer_Settings(bpy.types.PropertyGroup):
     laser_slicer_axis_y: BoolProperty(name="Y", description="Slice along Y axis", default=False)
     laser_slicer_axis_z: BoolProperty(name="Z", description="Slice along Z axis", default=True)
     laser_slicer_labels: BoolProperty(name="", description="Enable labels in svg", default=True)
+    laser_slicer_label_colour: FloatVectorProperty(size=3, name="", subtype='COLOR', min=0, max=1, default=(0.0, 0.0, 1.0))
     laser_slicer_intersections: BoolProperty(name="", description="Show intersections in svg", default=True)
+    laser_slicer_logging: BoolProperty(name="", description="Enable logging", default=False)
     laser_slicer_log_path: StringProperty(name="", description="Log file path", subtype="FILE_PATH", default="")
+    laser_slicer_cut_notch_margin: FloatProperty(name="", description="Notch margin (mm)", min=0, max=50, default=2)
 
 # Registering
 classes = (OBJECT_PT_Laser_Slicer_Panel, OBJECT_OT_Laser_Slicer, Slicer_Settings)
