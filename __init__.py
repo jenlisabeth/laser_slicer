@@ -65,10 +65,11 @@ def perform_axis_slicing(aob, axis, settings, scale_mm):
     mat_thickness = settings.laser_slicer_material_thick / scale_mm
     cut_spacing = settings.laser_slicer_cut_spacing / scale_mm
     use_polygons = settings.laser_slicer_accuracy
+    start_offset = settings.laser_slicer_cut_offset / scale_mm
 
     # Get slice range
     coords = [v.co[axis_index] for v in bm.verts]
-    minv = min(coords)
+    minv = min(coords) + start_offset
     maxv = max(coords)
     slice_pos = minv + mat_thickness * 0.5
 
@@ -116,25 +117,27 @@ def perform_axis_slicing(aob, axis, settings, scale_mm):
         verts = [v for v in cut if isinstance(v, bmesh.types.BMVert)]
         edges = [e for e in cut if isinstance(e, bmesh.types.BMEdge)]
 
-        voffset = min(v.index for v in verts)
+        if len(verts) > 0:
+            voffset = min(v.index for v in verts)
 
-        v_block = np.array([v.co for v in verts]).flatten()
-        e_index = np.array([[v.index - voffset + v_total for v in e.verts] for e in edges]).flatten()
+            v_block = np.array([v.co for v in verts]).flatten()
+            e_index = np.array([[v.index - voffset + v_total for v in e.verts] for e in edges]).flatten()
 
-        slice_vpos = np.append(slice_vpos, v_block)
-        vertex_blocks.append([
-            [(v.co - cob.location)[proj_axes[0]], (v.co - cob.location)[proj_axes[1]]] for v in verts
-        ])
-        edge_blocks.append([
-            [[(v.co - cob.location)[proj_axes[0]], (v.co - cob.location)[proj_axes[1]]] for v in e.verts]
-            for e in edges
-        ])
-        vertex_index = np.append(vertex_index, e_index)
+            slice_vpos = np.append(slice_vpos, v_block)
+            vertex_blocks.append([
+                [(v.co - cob.location)[proj_axes[0]], (v.co - cob.location)[proj_axes[1]]] for v in verts
+            ])
+            edge_blocks.append([
+                [[(v.co - cob.location)[proj_axes[0]], (v.co - cob.location)[proj_axes[1]]] for v in e.verts]
+                for e in edges
+            ])
+            vertex_index = np.append(vertex_index, e_index)
 
-        v_total += len(verts)
-        e_total += len(edges)
-        vcount_list.append(v_total)
-        ecount_list.append(e_total)
+            v_total += len(verts)
+            e_total += len(edges)
+            vcount_list.append(v_total)
+            ecount_list.append(e_total)
+
         slice_pos += mat_thickness + cut_spacing
         cbm.free()
 
@@ -230,10 +233,12 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
     cut_color = settings.laser_slicer_cut_colour
     line_thick = settings.laser_slicer_cut_line
     label_color = settings.laser_slicer_label_colour
+    prefix = settings.laser_slicer_label_prefix
 
-    dpi_scale = dpi / 25.4
-    scale = scale_mm * dpi_scale
-    logger.debug(f"[DEBUG] Overall scale: {scale}")
+    scale = scale_mm
+    # dpi_scale = dpi / 25.4
+    # scale = scale_mm * dpi_scale
+    # logger.debug(f"[DEBUG] Overall scale: {scale}")
 
     # Attempt to retrieve the slice object (cob) from the scene.
     slice_obj = None
@@ -297,7 +302,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
         svg_group += '<g>\n'
 
         if settings.laser_slicer_labels:
-            slice_label = f"{axis}-{i:02d}"
+            slice_label = f"{prefix}{axis}-{i:02d}"
             if valid_verts:
                 label_x = scale * (x_offset + (xmin + xmax) / 2)
                 label_y = scale * (y_offset + (ymin + ymax) / 2)
@@ -408,7 +413,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
                                     # # Draw the intersection line
                                     # svg_group += f'<line x1="{local_x_pos:.2f}" y1="{min_y:.2f}" x2="{local_x_pos:.2f}" y2="{max_y:.2f}" style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
                                     if settings.laser_slicer_labels:
-                                        label = f"{other_axis}-{positions.index(pos):02d}"
+                                        label = f"{prefix}{other_axis}-{positions.index(pos):02d}"
                                         label_y = mid_y+10 if current_axis_index == 0 else mid_y-10
                                         svg_group += f'<text x="{local_x_pos:.2f}" y="{label_y:.2f}" font-size="8" fill="rgb({int(255*label_color[0])},{int(255*label_color[1])},{int(255*label_color[2])})" text-anchor="middle">{label}</text>\n'
                             
@@ -469,7 +474,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
                                     # # Draw the intersection line
                                     # svg_group += f'<line x1="{min_x:.2f}" y1="{local_y_pos:.2f}" x2="{local_y_pos:.2f}" y2="{max_x:.2f}" style="stroke:gray;stroke-width:0.5;stroke-dasharray:5,5" />\n'
                                     if settings.laser_slicer_labels:
-                                        label = f"{other_axis}-{positions.index(pos):02d}"
+                                        label = f"{prefix}{other_axis}-{positions.index(pos):02d}"
                                         label_x = mid_x+10 if current_axis_index == 0 else mid_x-10
                                         svg_group += f'<text x="{label_x:.2f}" y="{local_y_pos:.2f}" font-size="8" fill="rgb({int(255*label_color[0])},{int(255*label_color[1])},{int(255*label_color[2])})" text-anchor="middle">{label}</text>\n'            
 
@@ -480,7 +485,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
             with open(filepaths[i], 'w') as f:
                 f.write('<?xml version="1.0"?>\n')
                 f.write('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" ')
-                f.write(f'width="{mat_width*dpi_scale}" height="{mat_height*dpi_scale}" viewBox="0 0 {mat_width*dpi_scale} {mat_height*dpi_scale}">\n')
+                f.write(f'width="{mat_width}mm" height="{mat_height}mm" viewBox="0 0 {mat_width} {mat_height}">\n')
                 f.write(svg_group)
                 f.write('</svg>\n')
             logger.debug(f"[DEBUG] File saved: {filepaths[i]}")
@@ -492,7 +497,7 @@ def generate_svg_files(data, aob, axis, settings, scale_mm, all_slice_positions)
         with open(filepath, 'w') as f:
             f.write('<?xml version="1.0"?>\n')
             f.write('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" ')
-            f.write(f'width="{mat_width*dpi_scale}" height="{mat_height*dpi_scale}" viewBox="0 0 {mat_width*dpi_scale} {mat_height*dpi_scale}">\n')
+            f.write(f'width="{mat_width}mm" height="{mat_height}mm" viewBox="0 0 {mat_width} {mat_height}">\n')
             f.write(svg_doc)
             f.write('</svg>\n')
         logger.debug(f"[DEBUG] File saved: {filepath}")
@@ -585,16 +590,18 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
         box.label(text="Cut Settings:")
         newrow(box, "DPI:", settings, 'laser_slicer_dpi')
         newrow(box, "Line Colour:", settings, 'laser_slicer_cut_colour')
-        newrow(box, "Thickness (px):", settings, 'laser_slicer_cut_line')
+        newrow(box, "Thickness (mm):", settings, 'laser_slicer_cut_line')
         newrow(box, "Separate Files:", settings, 'laser_slicer_separate_files')
         if settings.laser_slicer_separate_files:
             newrow(box, "Cut Position:", settings, 'laser_slicer_svg_position')
         newrow(box, "Cut spacing (mm):", settings, 'laser_slicer_cut_spacing')
+        newrow(box, "Cut offset (mm):", settings, 'laser_slicer_cut_offset')
         newrow(box, "Laser kerf (mm):", settings, 'laser_slicer_cut_thickness')
         newrow(box, "SVG Polygons:", settings, 'laser_slicer_accuracy')
         newrow(box, "Export Path:", settings, 'laser_slicer_ofile')
         newrow(box, "Enable Labels:", settings, 'laser_slicer_labels')
         if settings.laser_slicer_labels:
+            newrow(box, "Label Prefix:", settings, 'laser_slicer_label_prefix')
             newrow(box, "Label Colour:", settings, 'laser_slicer_label_colour')
 
         
@@ -625,15 +632,16 @@ class OBJECT_PT_Laser_Slicer_Panel(bpy.types.Panel):
             for axis in axes:
                 axis_index = {'X': 0, 'Y': 1, 'Z': 2}[axis]
                 coords = [v.co[axis_index] for v in bm.verts]
-                minv = min(coords)
-                maxv = max(coords)
+                if len(coords) > 0:
+                    minv = min(coords)
+                    maxv = max(coords)
 
-                scale_mm = 1000 * context.scene.unit_settings.scale_length
-                mat_thickness = settings.laser_slicer_material_thick / scale_mm
-                spacing = settings.laser_slicer_cut_spacing / scale_mm
+                    scale_mm = 1000 * context.scene.unit_settings.scale_length
+                    mat_thickness = settings.laser_slicer_material_thick / scale_mm
+                    spacing = settings.laser_slicer_cut_spacing / scale_mm
 
-                total_length = maxv - minv
-                slices += 1 + math.ceil(total_length / (mat_thickness + spacing))
+                    total_length = maxv - minv
+                    slices += 1 + math.ceil(total_length / (mat_thickness + spacing))
 
             bm.free()
 
@@ -654,6 +662,7 @@ class Slicer_Settings(bpy.types.PropertyGroup):
         name="", description="SVG layout", default='0')
     laser_slicer_cut_spacing: FloatProperty(name="", description="Cut spacing (mm)", min=0, max=500, default=1)
     laser_slicer_cut_thickness: FloatProperty(name="", description="Laser kerf (mm)", min=0, max=5, default=1)
+    laser_slicer_cut_offset: FloatProperty(name="", description="Cut offset (mm)", min=-500, max=500, default=0)
     laser_slicer_ofile: StringProperty(name="", description="Output file", subtype="FILE_PATH", default="")
     laser_slicer_accuracy: BoolProperty(name="", description="Use accurate polygons", default=False)
     laser_slicer_cut_colour: FloatVectorProperty(size=3, name="", subtype='COLOR', min=0, max=1, default=(1.0, 0.0, 0.0))
@@ -662,6 +671,7 @@ class Slicer_Settings(bpy.types.PropertyGroup):
     laser_slicer_axis_y: BoolProperty(name="Y", description="Slice along Y axis", default=False)
     laser_slicer_axis_z: BoolProperty(name="Z", description="Slice along Z axis", default=True)
     laser_slicer_labels: BoolProperty(name="", description="Enable labels in svg", default=True)
+    laser_slicer_label_prefix: StringProperty(name="", description="Label prefix", default="")
     laser_slicer_label_colour: FloatVectorProperty(size=3, name="", subtype='COLOR', min=0, max=1, default=(0.0, 0.0, 1.0))
     laser_slicer_intersections: BoolProperty(name="", description="Show intersections in svg", default=True)
     laser_slicer_logging: BoolProperty(name="", description="Enable logging", default=False)
